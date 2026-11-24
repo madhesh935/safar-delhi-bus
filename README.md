@@ -1,124 +1,212 @@
-# 🚌 Safar: Delhi bus journey planner with travel times learned from bus GPS
+# 🚌 Safar: Real-time Bus Traffic Model and Journey Planner for Delhi
 
-*Transport Stack Hackathon 2026 · Problem 1: Real-time bus traffic model and journey planner*
+*Transport Stack Hackathon 2026 · Problem 1*
 
-The published timetable assumes fixed running times. Safar instead learns how long each stretch of road between two bus stops actually takes, at each time of day, from DTC bus GPS traces. It then plans bus journeys with those learned times.
+---
 
-## Results on real Delhi data
+## 1. Problem statement
 
-**Data used**
-- 9 days of October 2026 DTC GPS data (Oct 6, 7, 8, 10, 11, 21, 22, 27, 28): about 263 million GPS points from up to 6,328 buses per day.
-- Map-matching turned these into **11.6 million stop-to-stop travel-time observations**, covering **13,084 of the 15,119 road segments (86.5%)** in the GTFS network.
+Delhi has thousands of buses on the road, and each one reports its GPS position every few seconds. The published timetable, however, assumes **fixed travel times**, so a commuter cannot tell whether a trip will take 30 minutes or 60.
 
-**Backtest**
-- **Training:** 7 days (Oct 6, 7, 8, 10, 11, 21, 22).
-- **Testing:** Oct 27–28. The model never saw these days.
-- **Test journeys:** 40,000 randomly sampled stretches of 5–30 consecutive stops on buses actually observed on the test days. The "actual" time is the GPS-observed time.
+**The challenge:** use the bus fleet as a set of moving sensors.
 
-Full report: [docs/VALIDATION.md](docs/VALIDATION.md).
+1. Build a **model of bus travel times** from real-time and historical GPS.
+2. Build a **journey planner** on top of it. Given an origin, a destination and a departure time, it returns bus journey options (walk, board, route, transfers, alight, walk) with realistic total times.
+3. Make the answers **change with time**. A 9 AM weekday trip must not get the same estimate as the same trip at 11 PM.
+4. Expose it as an **API** with a simple screen to view the results.
 
-| Method | Mean abs. error | MAPE | within ±10% | within ±5 min |
-|---|---|---|---|---|
-| GTFS timetable | 5.65 min | 29.0% | 20.8% | 60.9% |
-| Static average (no time of day) | 4.73 min | 21.9% | 29.7% | 69.6% |
-| Safar model (historical only) | 2.84 min | 14.1% | 48.2% | 84.4% |
-| Safar model + live nowcast* | 2.61 min | 12.9% | 50.4% | 86.4% |
+---
 
-\* The live nowcast was evaluated by replaying the test days. For each journey, it used only GPS from buses that finished a segment in the 20 minutes *before* the journey started, so it had no information from the future.
+## 2. Our solution: Safar
 
-**Overall:** the mean absolute error is 54% lower than the GTFS timetable (2.61 vs 5.65 min).
+Safar learns how long every stretch of road between two bus stops **actually takes**, for every 30 minutes of the day and every day type, from how buses really move. It then plans journeys with those learned times instead of the printed timetable.
 
-**By time of day:** the largest gain is in the 17:00–21:00 band, where error falls from 7.49 min (timetable) to 3.72 min (model) and 3.35 min (model + live nowcast).
+| Capability | What Safar does |
+|---|---|
+| **Travel-time model** | Stop-to-stop times learned from GPS, pooled across every route that uses the same road, by day type (weekday / Saturday / Sunday or holiday) × 30-minute bin |
+| **Time-aware prediction** | Each road segment is predicted for the moment the bus actually reaches it (time propagation) |
+| **Uncertainty** | Every journey comes with a likely range (80% band), not just a single number |
+| **Live adjustment** | If buses are running slower than usual right now, near-term estimates adjust, and the effect fades smoothly back to the historical pattern |
+| **Journey planning** | RAPTOR routing (the round-based algorithm used by modern transit planners) with up to 2 transfers, run on a GPS-calibrated timetable |
+| **Traffic insight** | The journey now vs at the quietest hour vs the printed timetable, a "best time to leave" curve, and a city-wide traffic map built from the buses |
+| **API + web app** | A documented FastAPI service and the **Safar** web app |
 
-![Error by time of day](docs/img/mae_by_band.png)
+---
 
-## What it does
-
-- **`GET /journeys`** takes an origin and a destination (a stop name or `lat,lng`) and a departure time. It returns up to 3 bus journeys, each with:
-  - the walk to the first stop, where to board, the route, any transfers, where to get off, the final walk, and the total time
-  - an **80% range**, from the spread of segment travel times
-  - the **timetable's estimate** for the same trip
-  - the **same trip at the quietest time of day**, to show the effect of traffic
-  - how often buses on the route were observed at that hour, where enough observations exist
-- **Routing:** RAPTOR (round-based public-transit routing) with up to 2 transfers, or 3 if no journey is found. It runs on the scheduled departures, with running times re-predicted by the model.
-- **`GET /profile`:** door-to-door time for each departure from 05:00 to 23:00 along the best route ("best time to leave").
-- **`GET /congestion`:** learned bus speed on every observed segment for a day type and time.
-- **Web app** (`web/index.html`):
-  - a map with journey options
-  - a time-of-day traffic map
-  - model and accuracy statistics
-- **Speed:** a journey query on the full Delhi network takes a few seconds on a laptop.
-
-![City congestion profile learned from the bus fleet](docs/img/congestion_profile.png)
-
-*Travel-time index by time of day: each 30-minute bin's median deviation from the segment's all-day level, relative to the fastest bin. Learned from all matched segments.*
-
-## How it works
-
-Full detail is in [docs/TECHNICAL_NOTE.md](docs/TECHNICAL_NOTE.md).
+## 3. Workflow
 
 ```mermaid
 flowchart LR
-  A[GPS points<br/>SQLite per day] --> B[Clean<br/>spikes, duplicates]
-  B --> C[Map-match to route<br/>pattern geometry]
-  C --> D[Stop-crossing times<br/>interpolated]
-  D --> E[Stop-to-stop traversals]
-  G[Static GTFS] --> P[Patterns + segments]
+  subgraph Inputs
+    A[Historical bus GPS<br/>SQLite per day]
+    G[Static GTFS<br/>stops, routes, trips, shapes]
+    R[Live GPS<br/>GTFS-RT]
+  end
+  A --> B[Clean<br/>remove spikes, duplicates]
+  B --> C[Map-match<br/>snap GPS to route shape]
+  G --> P[Route patterns<br/>+ road segments]
   P --> C
+  C --> D[Stop-crossing times<br/>interpolated]
+  D --> E[Stop-to-stop<br/>travel times]
   E --> M[Travel-time model<br/>segment × day type × 30 min<br/>Bayesian shrinkage]
-  M --> T[GPS-calibrated timetable]
-  R[Live GPS<br/>GTFS-RT or replay] --> N[Nowcast ratio<br/>last 20 min]
+  M --> T[GPS-calibrated<br/>timetable]
+  R --> N[Live nowcast<br/>last 20 min vs usual]
+  T --> J[RAPTOR<br/>journey search]
   N --> J
-  T --> J[RAPTOR journey search]
-  J --> API[FastAPI + web app]
+  J --> API[FastAPI /journeys]
+  API --> UI[Safar web app]
 ```
 
-1. **Map-matching.**
-   - Each GPS point is projected onto the shape of its route (from `route_id` and the GTFS patterns).
-   - Points more than 70 m from the shape are dropped, and so are points not moving forward.
-   - The time the bus passes each stop is interpolated.
-2. **Segment model.**
-   - Stop A → B times are pooled across all routes that use that segment.
-   - For each segment, day type (weekday / Saturday / Sunday or holiday) and 30-minute bin, the observed median is shrunk towards the segment's all-day level plus the city-wide congestion profile.
-   - Segments that were never observed fall back to their length and their scheduled time.
-3. **Time propagation.** Each segment is looked up at the time the bus is predicted to reach it, not at the departure time.
-4. **Live nowcast.**
-   - Recent GPS is matched the same way and compared with the model's expectation.
-   - The ratio is applied to the next few segments and fades out over 30 minutes.
-5. **Routing.** RAPTOR runs on the GTFS departures, with every downstream stop time re-predicted by the model.
+**Step by step**
 
-## Quick start
+1. **Clean.** Drop out-of-area points, duplicate reports and GPS spikes (impossible jumps), and down-sample each bus's trace.
+2. **Map-match.**
+   - Project every GPS point onto the road shape of its route.
+   - Keep only points close to the road that are moving forward.
+   - Split each bus's day into individual trips, one per direction.
+3. **Stop-crossing times.** Interpolate the exact time each bus passed each stop. Consecutive stops give **stop-to-stop travel times**, which already include dwell time at stops and waits at signals, exactly as a passenger experiences them.
+4. **Travel-time model.**
+   - For every road segment × day type × 30-minute bin, estimate the typical time and its spread.
+   - Segments with little data borrow strength from the segment's all-day level plus the **city-wide congestion profile** (empirical-Bayes shrinkage), so there are no wild estimates.
+5. **Time propagation.** A journey is predicted segment by segment, each at the time the bus will reach it.
+6. **Live nowcast.** Recent GPS is matched the same way and compared with the usual times. The ratio adjusts the next few segments and fades over 30 minutes.
+7. **Journey search.**
+   - Scheduled departures are combined with GPS-predicted running times.
+   - RAPTOR finds the fastest journeys with 0, 1 or 2 transfers, including walking to, from and between stops.
+8. **Serve.** The REST API and the web app.
 
-Requires Python 3.10+ (developed on 3.14).
+Full method: [docs/TECHNICAL_NOTE.md](docs/TECHNICAL_NOTE.md).
+
+---
+
+## 4. Project structure
+
+```
+safar-delhi-bus/
+├── config.py                 paths and tunable parameters
+├── transit/                  core engine
+│   ├── geo.py                projection, polyline matching, spatial grid
+│   ├── gtfs.py               GTFS → route patterns, geometry, segments, schedules
+│   ├── gps.py                GPS reader (auto-detects columns) and cleaning
+│   ├── matcher.py            GPS → trips → stop crossings → travel times
+│   ├── model.py              travel-time model (shrinkage, propagation, uncertainty)
+│   ├── router.py             GPS-calibrated timetables + RAPTOR
+│   ├── live.py               live nowcast (GTFS-RT / replay)
+│   └── planner.py            journey options, profile, traffic map
+├── api/app.py                FastAPI service
+├── web/index.html            Safar web app (Leaflet + Chart.js)
+├── scripts/
+│   ├── prepare_network.py    build the network from GTFS
+│   ├── match_gps.py          map-match GPS (parallel, per day)
+│   ├── build_model.py        train the travel-time model
+│   ├── backtest.py           accuracy evaluation → docs/VALIDATION.md
+│   ├── compare_google.py     comparison with Google Maps
+│   └── make_synthetic.py     synthetic demo data
+├── tools/r7z.py              extract selected days from the remote GPS archive
+├── docs/
+│   ├── TECHNICAL_NOTE.md     detailed method
+│   ├── VALIDATION.md         accuracy report
+│   └── img/                  result charts
+├── sample_output.json        real API response
+├── requirements.txt · Dockerfile · run_pipeline.bat · run_demo.bat
+```
+
+---
+
+## 5. Model outputs
+
+### City congestion profile learned from the buses
+
+How much longer bus trips take at each time of day, compared with the fastest time. There is a clear morning peak, a sustained midday plateau and an evening peak around 18:00–19:00. Weekends are lighter.
+
+![City congestion profile](docs/img/congestion_profile.png)
+
+### Predicted vs actual journey times
+
+The printed timetable compared with Safar, against real observed bus journeys. Points on the dashed line are perfect predictions.
+
+![Predicted vs actual](docs/img/pred_vs_actual.png)
+
+### Example journey: ISBT Kashmere Gate → Nehru Place, Tuesday 08:30
+
+| | |
+|---|---|
+| Route | **425CLUP** (direct) |
+| Board / alight | Kashmere Gate City Bus Terminal 08:43 → Nehru Place 09:28 (27 stops) |
+| Door-to-door | **61 min**, likely range 50–72 min |
+| Breakdown | walk 7 min · wait 9 min · ride 45 min |
+| Same trip at the quietest hour | 49 min, so traffic adds **12 min** |
+| Printed timetable estimate | 64 min |
+
+The API also returns the route geometry, alternative options with transfers, and a "best time to leave" curve across the day. Full response: [`sample_output.json`](sample_output.json).
+
+---
+
+## 6. Results
+
+Accuracy was measured on **held-out days the model never saw**. Each test is a real bus journey along a route; the predicted travel time is compared with the time the bus actually took ([full report](docs/VALIDATION.md)).
+
+| Method | Mean abs. error | MAPE | within ±10% | within ±5 min |
+|---|---|---|---|---|
+| Printed GTFS timetable | 5.65 min | 29.0% | 20.8% | 60.9% |
+| Average speed (no time of day) | 4.73 min | 21.9% | 29.7% | 69.6% |
+| **Safar model** | **2.84 min** | **14.1%** | **48.2%** | **84.4%** |
+| **Safar model + live nowcast** | **2.61 min** | **12.9%** | **50.4%** | **86.4%** |
+
+**Key results**
+- **54% lower error** than the printed timetable.
+- **Evening peak (17:00–21:00):** error falls from **7.5 min to 3.4 min**.
+- **86% of journeys** are predicted within ±5 minutes.
+- The live nowcast improves accuracy further, using only information available before each journey starts.
+
+![Error by time of day](docs/img/mae_by_band.png)
+
+---
+
+## 7. API
+
+| Endpoint | Returns |
+|---|---|
+| `GET /journeys?from=Kashmere Gate ISBT&to=Nehru Place&depart=2026-10-27T08:30` | Journey options (`from`/`to`: stop name or `lat,lng`) |
+| `GET /profile?from=…&to=…&depart=…` | Door-to-door time for each departure, 05:00–23:00 |
+| `GET /stops/search?q=nehru` | Stop name search |
+| `GET /congestion?day_type=weekday&time=09:00` | Learned bus speed on every road segment |
+| `GET /city-profile` | City congestion index through the day |
+| `GET /live/status` · `GET /meta` | Live status · model and accuracy summary |
+
+Interactive documentation is at `/docs` when the server is running.
+
+---
+
+## 8. How to run
 
 ```bash
 pip install -r requirements.txt
-pip install py7zr            # only needed for tools/r7z.py
 ```
 
 **1. Data**
-- **GPS.** The archive is 16 GB: 31 daily SQLite files, each 3–5 GB uncompressed. `tools/r7z.py` reads the remote `.7z` with HTTP range requests and extracts only the days you name.
-  ```bash
-  python tools/r7z.py list
-  python tools/r7z.py extract ../data/gps bus_movements_2026_10_27.db bus_movements_2026_10_28.db
-  ```
-- **Static GTFS.** Use the Transport Stack's `delhi_buses_static_gtfs_v1.zip`. We used the copy mirrored on the Mobility Database (feed `mdb-3666`, downloaded 2026-11-24). Unzip it to `../data/gtfs`.
+- **GPS archive:** use `tools/r7z.py` to extract only the days you need from the remote archive.
+- **Static GTFS:** use the Transport Stack's `delhi_buses_static_gtfs_v1.zip`.
+
+```bash
+pip install py7zr
+python tools/r7z.py list
+python tools/r7z.py extract ../data/gps bus_movements_2026_10_27.db
+```
 
 ```bat
 set GPS_DIR=..\data\gps
 set GTFS_DIR=..\data\gtfs
 ```
 
-**2. Build.** These are the exact commands used for the results above.
+**2. Build**
 
 ```bash
 python scripts/prepare_network.py
-python scripts/match_gps.py --days 2026-10-06,2026-10-07,2026-10-08,2026-10-10,2026-10-11,2026-10-21,2026-10-22,2026-10-27,2026-10-28 --workers 4
-python scripts/backtest.py --train "2026-10-06:2026-10-11,2026-10-21,2026-10-22" --test 2026-10-27:2026-10-28 --samples 40000
+python scripts/match_gps.py --days all --workers 4
+python scripts/backtest.py --train <days> --test <days>
 python scripts/build_model.py --train all
 ```
-
-Each day is matched independently, so days run in parallel across workers.
 
 **3. Run**
 
@@ -129,74 +217,23 @@ python -m uvicorn api.app:app --port 8000
 - Web app: http://localhost:8000
 - API docs: http://localhost:8000/docs
 
-**Replay mode** feeds a historical day through the live code path:
+**Options**
+- **Live mode:** set `LIVE_MODE=gtfsrt` with `GTFSRT_URL` and `GTFSRT_API_KEY`.
+- **Replay mode:** set `LIVE_MODE=replay` with `LIVE_REPLAY_DB` and `LIVE_REPLAY_START` to replay any day as if it were live.
+- **Quick demo:** `run_demo.bat` runs the whole pipeline on a small synthetic network.
 
-```bat
-set LIVE_MODE=replay
-set LIVE_REPLAY_DB=..\data\gps\bus_movements_2026_10_28.db
-set LIVE_REPLAY_START=2026-10-28T08:15
-python -m uvicorn api.app:app --port 8000
-```
+---
 
-**Live GTFS-RT:** set `LIVE_MODE=gtfsrt`, `GTFSRT_URL` and `GTFSRT_API_KEY`.
+## 9. Tech stack
 
-**Quick smoke test:** `run_demo.bat` generates a small synthetic network and runs the whole pipeline end to end.
+- **Processing and modelling:** Python, NumPy, pandas
+- **API:** FastAPI, Uvicorn
+- **Frontend:** Leaflet, Chart.js
+- **Data formats:** GTFS / GTFS-RT
+- **Routing:** RAPTOR
+- **Deployment:** Docker
 
-## API
+## 10. Data sources
 
-| Endpoint | Returns |
-|---|---|
-| `GET /journeys?from=Kashmere Gate ISBT&to=Nehru Place&depart=2026-10-27T08:30` | Journey options (`from`/`to`: stop name or `lat,lng`) |
-| `GET /profile?from=…&to=…&depart=…` | Door-to-door minutes for each departure, 05:00–23:00 |
-| `GET /stops/search?q=nehru` | Stop name lookup |
-| `GET /congestion?day_type=weekday&time=09:00` | Learned speed on every observed segment |
-| `GET /city-profile` | City congestion index by time of day |
-| `GET /live/status` · `GET /meta` | Live mode status · data, model and validation summary |
-
-Real response for the query above, trimmed (full response in [`sample_output.json`](sample_output.json)):
-
-```json
-{
-  "query": {"from": {"name": "ISBT Kashmere Gate"}, "to": {"name": "Nehru Place"},
-            "depart": "2026-10-27 08:30", "day_type": "weekday"},
-  "options": [{
-    "summary": "425CLUP", "depart": "08:30", "arrive": "09:31",
-    "total_min": 61.4, "range_min": [50.5, 72.3],
-    "walk_min": 7.1, "wait_min": 9.0, "ride_min": 45.3, "transfers": 0,
-    "usual_at_quiet_hour_min": 49.4, "traffic_delay_min": 12.0, "timetable_estimate_min": 64.4,
-    "legs": [
-      {"type": "walk", "min": 4.0, "to": "Kashmere Gate City Bus Terminal"},
-      {"type": "bus", "route": "425CLUP", "board_stop": "Kashmere Gate City Bus Terminal", "depart": "08:43",
-       "alight_stop": "Nehru Place", "arrive": "09:28", "n_stops": 27, "ride_min": 45.3,
-       "timetable_ride_min": 48.3, "observed_headway_min": null, "path": "[…]"},
-      {"type": "walk", "min": 3.1, "to": "destination"}
-    ]
-  }]
-}
-```
-
-## Repository layout
-
-```
-config.py              paths and tunable parameters
-transit/
-  geo.py               projection, polyline matching, spatial grid
-  gtfs.py              GTFS -> patterns, geometry, segments, schedules
-  gps.py               SQLite reader (auto-detects columns), cleaning
-  matcher.py           GPS -> runs -> stop crossings -> traversals
-  model.py             travel-time model (shrinkage, propagation, uncertainty, headways)
-  router.py            GPS-calibrated timetables + RAPTOR
-  live.py              live nowcast (GTFS-RT / replay)
-  planner.py           journey options, profile, congestion map
-api/app.py             FastAPI service
-web/index.html         web app (Leaflet + Chart.js)
-scripts/               prepare_network, match_gps, build_model, backtest, compare_google, make_synthetic
-tools/                 r7z.py (partial archive extraction), inspection helpers
-docs/                  TECHNICAL_NOTE.md, VALIDATION.md, img/
-```
-
-## Data sources
-
-- **GPS:** Delhi Transport Stack, DTC GPS traces for October 2026, from the problem statement's archive (`vehicle_feed` table: vehicle_id, lat, lng, speed, route_id, trip_id, timestamp).
-- **Static GTFS:** Delhi Transport Stack `delhi_buses_static_gtfs_v1.zip`, via the Mobility Database mirror (mdb-3666). It has 6,862 stops, 2,574 routes and 80,357 trips.
+- **Delhi Transport Stack:** DTC bus GPS traces, static GTFS, and GTFS-RT.
 - **Map tiles:** © Esri, © OpenStreetMap contributors.

@@ -108,8 +108,8 @@ prior[s,d,b] = base[s] + F[d,b]
 ## 5. Validation (see [VALIDATION.md](VALIDATION.md))
 
 **Backtest on unseen days.**
-- Train on 7 days (Oct 6, 7, 8, 10, 11, 21, 22) and test on Oct 27–28.
-- Results: the mean absolute error is 5.65 min for the timetable, 4.73 min for the static average, 2.84 min for the model and 2.61 min for the model with live nowcast, over 40,000 journeys.
+- Train on some days and test on later held-out days.
+- Results: the mean absolute error is 5.65 min for the timetable, 4.73 min for the static average, 2.84 min for the model and 2.61 min for the model with live nowcast.
 - Test journeys are real: random stretches of 5–30 stops on buses observed on the test days.
 - Four methods are compared: the GTFS timetable, a time-of-day-agnostic average, our model, and our model with live nowcast.
 - Reported metrics: MAE, MAPE, share within ±10%, share within ±5 min, and bias, broken down by time of day.

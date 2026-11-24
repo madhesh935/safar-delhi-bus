@@ -1,9 +1,6 @@
 # Validation report
 
-*Train days:* 2026-10-06 → 2026-10-22 (7 days)  
-*Test days (unseen):* 2026-10-27 → 2026-10-28 (2 days)  
-*Journeys evaluated:* 40,000 real bus journeys of 5–30 stops, sampled from GPS-observed trips  
-*Road segments with GPS data:* 86.0%
+*Evaluated on held-out days the model never saw, using real bus journeys of 5–30 stops sampled from GPS-observed trips.*
 
 ## Overall
 
