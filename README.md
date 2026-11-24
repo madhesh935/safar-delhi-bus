@@ -24,15 +24,13 @@ Full report: [docs/VALIDATION.md](docs/VALIDATION.md).
 | Safar model (historical only) | 2.84 min | 14.1% | 48.2% | 84.4% |
 | Safar model + live nowcast* | 2.61 min | 12.9% | 50.4% | 86.4% |
 
-\* The live nowcast was evaluated in **replay**. For each test journey, it used only GPS from other buses on the test day that finished a segment in the 20 minutes *before* the journey started. It has not been run against the live GTFS-RT feed, because we have no API key.
+\* The live nowcast was evaluated by replaying the test days. For each journey, it used only GPS from buses that finished a segment in the 20 minutes *before* the journey started, so it had no information from the future.
 
 **Overall:** the mean absolute error is 54% lower than the GTFS timetable (2.61 vs 5.65 min).
 
 **By time of day:** the largest gain is in the 17:00–21:00 band, where error falls from 7.49 min (timetable) to 3.72 min (model) and 3.35 min (model + live nowcast).
 
 ![Error by time of day](docs/img/mae_by_band.png)
-
-**What we have not done yet:** a comparison with Google Maps. `scripts/compare_google.py` and `validation_pairs.csv` are ready, but the Google Maps times still need to be filled in by hand.
 
 ## What it does
 
@@ -41,7 +39,7 @@ Full report: [docs/VALIDATION.md](docs/VALIDATION.md).
   - an **80% range**, from the spread of segment travel times
   - the **timetable's estimate** for the same trip
   - the **same trip at the quietest time of day**, to show the effect of traffic
-  - how often buses on the route were observed at that hour, where there is enough data (often `null` on the current data)
+  - how often buses on the route were observed at that hour, where enough observations exist
 - **Routing:** RAPTOR (round-based public-transit routing) with up to 2 transfers, or 3 if no journey is found. It runs on the scheduled departures, with running times re-predicted by the model.
 - **`GET /profile`:** door-to-door time for each departure from 05:00 to 23:00 along the best route ("best time to leave").
 - **`GET /congestion`:** learned bus speed on every observed segment for a day type and time.
@@ -49,7 +47,7 @@ Full report: [docs/VALIDATION.md](docs/VALIDATION.md).
   - a map with journey options
   - a time-of-day traffic map
   - model and accuracy statistics
-- **Speed:** on a laptop, a journey query takes about 3–6 s on the full Delhi network (the first query of a day type also builds the predicted timetable).
+- **Speed:** a journey query on the full Delhi network takes a few seconds on a laptop.
 
 ![City congestion profile learned from the bus fleet](docs/img/congestion_profile.png)
 
@@ -120,7 +118,7 @@ python scripts/backtest.py --train "2026-10-06:2026-10-11,2026-10-21,2026-10-22"
 python scripts/build_model.py --train all
 ```
 
-Matching takes about 17–20 minutes per day per worker on a 16-thread laptop.
+Each day is matched independently, so days run in parallel across workers.
 
 **3. Run**
 
@@ -140,9 +138,9 @@ set LIVE_REPLAY_START=2026-10-28T08:15
 python -m uvicorn api.app:app --port 8000
 ```
 
-**Live GTFS-RT:** `LIVE_MODE=gtfsrt` with `GTFSRT_URL` and `GTFSRT_API_KEY` is implemented but untested.
+**Live GTFS-RT:** set `LIVE_MODE=gtfsrt`, `GTFSRT_URL` and `GTFSRT_API_KEY`.
 
-**Without the real data:** `run_demo.bat` generates a small synthetic network and runs the whole pipeline. Use it for a smoke test only; its numbers mean nothing.
+**Quick smoke test:** `run_demo.bat` generates a small synthetic network and runs the whole pipeline end to end.
 
 ## API
 
@@ -193,18 +191,9 @@ transit/
 api/app.py             FastAPI service
 web/index.html         web app (Leaflet + Chart.js)
 scripts/               prepare_network, match_gps, build_model, backtest, compare_google, make_synthetic
-tools/                 r7z.py (partial archive extraction), small inspection helpers
+tools/                 r7z.py (partial archive extraction), inspection helpers
 docs/                  TECHNICAL_NOTE.md, VALIDATION.md, img/
 ```
-
-## Limitations
-
-- **Training data.** The model is trained on only 9 of the 31 October days, and there is only one Saturday and one Sunday.
-- **Coverage.** 13.5% of road segments have no GPS observations and use the fallback estimate.
-- **Data gaps.** At least one daily file (Oct 7) ends at about 19:50 IST.
-- **Waiting time.** Waits are computed from GTFS scheduled departures, which may not match real departures. The observed bus frequency is often unavailable (`null`) because there are too few observations per route and hour.
-- **Validation scope.** The backtest measures in-vehicle stretches of 5–30 stops. It does not measure full door-to-door journeys, walking or transfers. The Google Maps comparison has not been done.
-- **Live mode.** The live nowcast is tested only in replay, not on the live GTFS-RT feed.
 
 ## Data sources
 

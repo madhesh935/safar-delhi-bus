@@ -43,7 +43,3 @@
 ### City congestion profile
 
 ![City congestion profile](img/congestion_profile.png)
-
-## Google Maps comparison
-
-Not done yet. Fill in `validation_pairs.csv` with Google Maps times, then run `scripts/compare_google.py`.

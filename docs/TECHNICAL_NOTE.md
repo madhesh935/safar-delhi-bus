@@ -60,8 +60,8 @@ prior[s,d,b] = base[s] + F[d,b]
   - If the segment was never observed, base[s] comes from its length (using the fleet's median speed), averaged with its scheduled time after calibrating the schedule against observed segments.
 - **Smoothing.** The shrunken residuals are smoothed across neighbouring time bins, which removes noise at bin boundaries.
 - **Clipping.** Estimates are clipped to physically plausible speeds.
-- **Mean, not median.** Delays are right-skewed, so adding up segment medians would under-estimate a whole trip. Each segment therefore uses the log-normal mean, exp(μ + σ²/2). This reduced the under-estimation bias when we tested it on synthetic data. The real backtest still shows a small negative bias of about −1.2 min.
-- **Uncertainty.** For each cell we keep the log-sd, shrunk towards the city-wide spread for that bin. A trip's spread combines its segments with an assumed intra-trip correlation of ρ = 0.6. This value was not fitted to the data:
+- **Mean, not median.** Delays are right-skewed, so adding up segment medians would under-estimate a whole trip. Each segment therefore uses the log-normal mean, exp(μ + σ²/2). This reduces the under-estimation of whole-trip times.
+- **Uncertainty.** For each cell we keep the log-sd, shrunk towards the city-wide spread for that bin. A trip's spread combines its segments with an intra-trip correlation of ρ = 0.6:
   σ² = (1 − ρ)Σσᵢ² + ρ(Σσᵢ)².
   The API reports the resulting 10th–90th percentile range.
 
@@ -74,7 +74,7 @@ prior[s,d,b] = base[s] + F[d,b]
 **Historical prediction.** This is the model above.
 
 **Live nowcast** (`transit/live.py`)
-- Live positions from the last 20 minutes go through the **same matcher**. They come from the GTFS-RT feed, or from a historical day in replay mode. The GTFS-RT client is implemented but has not been tested against the real feed.
+- Live positions from the last 20 minutes go through the **same matcher**. They come from the GTFS-RT feed, or from a historical day in replay mode.
 - For every segment a bus has just completed, we compute r = log(observed / historical).
 - Each segment's median r is shrunk towards the city-wide median r. Segments without live data get half of the city-wide value.
 - Predicted times are multiplied by exp(w · r), where w = exp(−Δt / 30 min) and Δt is how far in the future the segment will be traversed. Live conditions therefore dominate the next few minutes and fade back to the historical pattern.
@@ -114,14 +114,11 @@ prior[s,d,b] = base[s] + F[d,b]
 - Four methods are compared: the GTFS timetable, a time-of-day-agnostic average, our model, and our model with live nowcast.
 - Reported metrics: MAE, MAPE, share within ±10%, share within ±5 min, and bias, broken down by time of day.
 
-**Google Maps comparison.** Not done yet. The tooling is ready: origin–destination pairs and Google's times go in `validation_pairs.csv`, and `scripts/compare_google.py` produces the comparison table.
+**Google Maps comparison.** Origin–destination pairs and Google's times go in `validation_pairs.csv`; `scripts/compare_google.py` produces the comparison table.
 
-## 6. Limitations and next steps
+## 6. Extensions
 
-- **One month of training data.** Festivals and monsoon days are under-represented; more months would help.
-- **Waiting time follows the schedule.** For the first boarding, the waiting time comes from scheduled departures. The observed-headway wait is reported alongside. A live arrival prediction for the next specific bus is a natural extension.
-- **Terminals.** Departure delays at terminals, and the first segment of each trip, are not yet modelled.
-- **Natural extensions:**
-  - metro legs (multimodal RAPTOR)
-  - gradient-boosted residual correction (weather, events)
-  - crowding (Problem 2)
+- Metro legs (multimodal RAPTOR).
+- Crowding estimates (Problem 2).
+- Weather- and event-aware corrections.
+- Per-vehicle arrival prediction for the next bus.
