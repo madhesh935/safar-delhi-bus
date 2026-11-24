@@ -1,0 +1,9 @@
+artifacts/
+demo_data/
+__pycache__/
+*.pyc
+*.db
+*.7z
+.venv/
+tools/remote7z.py
+run_rest.ps1
